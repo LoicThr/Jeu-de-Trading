@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+plotly
+scikit-learn
+statsforecast
+mlforecast
+statsmodels
+lightgbm
+window-ops
+numba
