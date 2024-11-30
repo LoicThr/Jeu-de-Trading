@@ -43,6 +43,17 @@ N_WINDOWS_INTERVAL = 8
 
 ###### DATA ######
 
+def validate_data(df):
+    df = df[['Date', 'unique_id', 'Prix']].copy()
+    required_columns = ['Date', 'unique_id', 'Prix']
+    for col in required_columns:
+        if col not in df.columns:
+            st.error(f"Colonne manquante : {col}")
+    if not pd.api.types.is_datetime64_any_dtype(df['Date']):
+        st.error("La colonne 'Date' doit être au format datetime.")
+    if (df['Prix'] < 0).any():
+        st.error("La colonne 'Prix' contient des valeurs négatives.")
+    return df
 
 @st.cache_data
 def load_data():
@@ -50,7 +61,7 @@ def load_data():
     train['Date'] = pd.to_datetime(train['Date'])
     test = pd.read_csv('data/test_game.csv')
     test['Date'] = pd.to_datetime(test['Date'])
-    return train, test
+    return validate_data(train), validate_data(test)
 
 def initialize_session_state(train, INIT_FOUNDS, NB_IDS, INIT_MAX_STOCK, INIT_YEARS_PLOT):
     if 'funds' not in st.session_state:
@@ -476,7 +487,7 @@ train, test = load_data()
 minmax_df = pd.concat([train, test]).groupby(['unique_id'])['Prix'].agg(Min='min', Max='max')
 initialize_session_state(train, INIT_FOUNDS, NB_IDS, INIT_MAX_STOCK, INIT_YEARS_PLOT)
 
-st.title("📈 Jeu de Trading 📈")
+st.title("📈 Crise des Anchois 📈")
 
 if st.session_state.current_step == 0:
     st.write(
@@ -503,7 +514,8 @@ if st.session_state.current_step == 0:
         st.rerun()
 
 elif st.session_state.current_step <= 10 :
-    if st.button("Lancer l'étape suivante"):
+    button_text = "🚨 Lancer l'étape finale 🚨" if st.session_state.current_step == 10 else "➡️ Lancer l'étape suivante"
+    if st.button(button_text):
         st.session_state.current_step += 1
         st.session_state.first_predictions_bool = True
         if st.session_state.current_step <= 10:
@@ -641,5 +653,7 @@ with st.sidebar:
     st.markdown("# 📦 **Inventaire**")
     for id_, quantity in st.session_state.stock.items():
         st.markdown(f"- **{id_}** : {quantity} unité{'s' if quantity > 1 else ''}")
+    st.divider()
+    st.write("Développé par **Loïc THIERY**")
 
 
