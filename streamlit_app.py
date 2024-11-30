@@ -235,7 +235,6 @@ def rescale_col(df, cols, selected_ids, minmax_df, INTERVAL_RESCALE):
 ###### PLOT ######
 
 
-@st.cache_data
 def generate_plots(
     data, predictions, past_predictions, selected_ids, current_step, shopping_days=None, 
     sales_days=None, years_plot=4, PLOT_PRED=True
