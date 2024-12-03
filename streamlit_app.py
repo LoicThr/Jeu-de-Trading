@@ -22,6 +22,9 @@ from utilsforecast.evaluation import evaluate
 from utilsforecast.losses import mae, rmse
 from statsmodels.tsa.seasonal import STL
 
+from typing import Dict, List, Tuple, Union, Callable
+from pydantic import BaseModel, Field, ValidationError, ConfigDict, field_validator
+
 
 st.set_page_config(
     page_title="Jeu de Trading",
@@ -33,81 +36,192 @@ st.set_page_config(
 
 HORIZON = 6
 METRICS_LIST = [mae, rmse]
-INTERVAL_RESCALE = [4,8]
-INIT_FOUNDS = 500 
+INTERVAL_RESCALE = [4., 8.]
+INIT_FOUNDS = 500.
 NB_IDS = 4
 INIT_MAX_STOCK = 3
 INIT_YEARS_PLOT = 3
 N_WINDOWS_INTERVAL = 8
 
+ALLOWED_IDS = [
+    'arnoglosse', 'atherinides nca (famille)', 'bar commun ou europeen',
+    'bar tachete', 'barbue', 'baudroies', 'bogue', 'buccin dit bulot',
+    'calmars', 'cardine franche', 'casserons nca', 'encornets rouges',
+    'gobies', 'grande vive', 'grondin perlon', 'homard europeen',
+    'langoustine', 'lieu jaune', 'limande commune', 'maquereau commun',
+    'merlan', 'merlu commun', 'morue commune', 'murex droite epine',
+    'pieuvre', 'plie commune', 'poissons plats nca (groupe)',
+    'rouget de vase', 'rouget-barbet de roche', 'saint-pierre',
+    'sar commun', 'seiche commune', 'sole commune', 'sole du senegal',
+    'tourteau dit crabe', 'turbot'
+]
+
 
 ###### DATA ######
 
-def validate_data(df):
-    df = df[['Date', 'unique_id', 'Prix']].copy()
-    required_columns = ['Date', 'unique_id', 'Prix']
-    for col in required_columns:
-        if col not in df.columns:
-            st.error(f"Colonne manquante : {col}")
-    if not pd.api.types.is_datetime64_any_dtype(df['Date']):
-        st.error("La colonne 'Date' doit être au format datetime.")
-    if (df['Prix'] < 0).any():
-        st.error("La colonne 'Prix' contient des valeurs négatives.")
-    return df
 
-@st.cache_data
+def validate_data(df: pd.DataFrame):
+    try:
+        if not isinstance(df, pd.DataFrame):
+            raise ValueError("The input must be a pandas DataFrame.")
+        if len(df) > 9340:
+            raise ValueError(f"The DataFrame exceeds the maximum allowed rows.")
+        required_columns = {
+            'unique_id': str,
+            'Date': pd.Timestamp,
+            'Prix': float
+        }
+        missing_cols = set(required_columns.keys()) - set(df.columns)
+        extra_cols = set(df.columns) - set(required_columns.keys())
+        if missing_cols:
+            raise ValueError(f"Missing required columns: {missing_cols}.")
+        if extra_cols:
+            raise ValueError(f"Unexpected columns found: {extra_cols}.")
+        for col, expected_type in required_columns.items():
+            if not df[col].map(lambda x: isinstance(x, expected_type)).all():
+                raise ValueError(f"Column '{col}' contains invalid types.")
+            if expected_type == str and not df[col].isin(ALLOWED_IDS).all():
+                raise ValueError(f"Column '{col}' contains invalid values.")
+        return df
+    
+    except ValueError as e:
+        st.error(str(e))
+        st.session_state.clear()
+        st.stop()
+
+
 def load_data():
     train = pd.read_csv('data/train_game.csv')
     train['Date'] = pd.to_datetime(train['Date'])
     test = pd.read_csv('data/test_game.csv')
     test['Date'] = pd.to_datetime(test['Date'])
-    return validate_data(train), validate_data(test)
+    train = validate_data(train)
+    test = validate_data(test)
+    return train, test 
 
-def initialize_session_state(train, INIT_FOUNDS, NB_IDS, INIT_MAX_STOCK, INIT_YEARS_PLOT):
-    if 'funds' not in st.session_state:
-        st.session_state.funds = INIT_FOUNDS
-    if 'selected_ids' not in st.session_state:
-        st.session_state.selected_ids = np.random.choice(train['unique_id'].unique(), NB_IDS, replace=False)
-    if 'stock' not in st.session_state:
-        st.session_state.stock = {id: np.random.randint(0,INIT_MAX_STOCK) for id in st.session_state.selected_ids}
-    if 'purchase_price' not in st.session_state:
-        st.session_state.purchase_price = {id: np.nan for id in st.session_state.selected_ids}
-    if 'predictions' not in st.session_state:
-        st.session_state.predictions = pd.DataFrame()
-    if 'baseline' not in st.session_state:
-        st.session_state.baseline = pd.DataFrame()
-    if 'predictions_memories' not in st.session_state:
-        st.session_state.predictions_memories = pd.DataFrame()
-    if 'first_predictions_bool' not in st.session_state:
-        st.session_state.first_predictions_bool = True
-    if 'current_step' not in st.session_state:
-        st.session_state.current_step = 0
-    if 'buy_mode' not in st.session_state:
-        st.session_state.buy_mode = False
-    if 'sell_mode' not in st.session_state:
-        st.session_state.sell_mode = False
-    if 'years_plot' not in st.session_state:
-        st.session_state.years_plot = INIT_YEARS_PLOT
-    if 'shopping_days' not in st.session_state:
-        st.session_state.shopping_days = []
-    if 'sales_days' not in st.session_state:
-        st.session_state.sales_days = []
 
-def reset_session_state(train, INIT_FOUNDS, NB_IDS, INIT_MAX_STOCK, INIT_YEARS_PLOT):
-    st.session_state.funds = INIT_FOUNDS
-    st.session_state.selected_ids = np.random.choice(train['unique_id'].unique(), NB_IDS, replace=False)
-    st.session_state.stock = {id: np.random.randint(0, INIT_MAX_STOCK) for id in st.session_state.selected_ids}
-    st.session_state.purchase_price = {id: np.nan for id in st.session_state.selected_ids}
-    st.session_state.predictions = pd.DataFrame()
-    st.session_state.baseline = pd.DataFrame()
-    st.session_state.predictions_memories = pd.DataFrame()
-    st.session_state.first_predictions_bool = True
-    st.session_state.current_step = 0
-    st.session_state.buy_mode = False
-    st.session_state.sell_mode = False
-    st.session_state.years_plot = INIT_YEARS_PLOT
-    st.session_state.shopping_days = []
-    st.session_state.sales_days = []
+###### Session State ######
+
+
+class SessionStateModel(BaseModel):
+    funds: float = Field(ge=0)
+    selected_ids: List[str]
+    stock: Dict[str, int]
+    purchase_price: Dict[str, Union[float, None]]
+    predictions: pd.DataFrame = pd.DataFrame(columns=['unique_id', 'Date', 'LGBMRegressor', 'LGBMRegressor-lo-95', 'LGBMRegressor-hi-95'])
+    baseline: pd.DataFrame = pd.DataFrame(columns=['index', 'unique_id', 'Date', 'Naive', 'SeasonalNaive'])
+    predictions_memories: pd.DataFrame = pd.DataFrame(columns=['unique_id', 'Date', 'LGBMRegressor', 'LGBMRegressor-lo-95', 'LGBMRegressor-hi-95'])
+    first_predictions_bool: bool = True
+    button_activate: bool = True
+    current_step: int = Field(ge=0)
+    buy_mode: bool = False
+    sell_mode: bool = False
+    years_plot: int = Field(ge=1, le=4)
+    shopping_days: List[Tuple[str, pd.Timestamp, float]] = []
+    sales_days: List[Tuple[str, pd.Timestamp, float]] = []
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @field_validator("selected_ids", "stock", "purchase_price", "shopping_days", "sales_days", mode="before")
+    def validate_selected_ids(cls, identifiers, field):
+        try:
+            if field.field_name == "selected_ids":
+                for item in identifiers:
+                    if item not in ALLOWED_IDS:
+                        raise ValueError(f"Invalid value in '{field.field_name}'.")
+            if field.field_name in ['stock', 'purchase_price']:
+                for item in identifiers.keys():
+                    if item not in ALLOWED_IDS:
+                        raise ValueError(f"Invalid value in '{field.field_name}'.")
+            if field.field_name in ["shopping_days", "sales_days"]:
+                for item in identifiers:
+                    if item[0] not in ALLOWED_IDS:
+                        raise ValueError(f"Invalid value in '{field.field_name}'.")
+            return identifiers
+        
+        except ValueError as e:
+            st.error(str(e))
+            st.session_state.clear()
+            st.stop()
+    
+    @field_validator("predictions", "baseline", "predictions_memories", mode='before')
+    def validate_dataframe(cls, df, field):
+        try:
+            if not isinstance(df, pd.DataFrame):
+                raise ValueError(f"The field {field.field_name} must be a pandas DataFrame.")
+            
+            if len(df) > 1950:
+                raise ValueError(f"The DataFrame for field {field.field_name} exceeds the maximum allowed number of rows. It has {len(df)} rows.")
+            
+            required_columns = {
+                "predictions": {"unique_id":str, "Date":pd.Timestamp, "LGBMRegressor":float, "LGBMRegressor-lo-95":float, "LGBMRegressor-hi-95":float},
+                "baseline": {"index":int, "unique_id":str, "Date":pd.Timestamp, "Naive":float, "SeasonalNaive":float},
+                "predictions_memories": {"unique_id":str, "Date":pd.Timestamp, "LGBMRegressor":float, "LGBMRegressor-lo-95":float, "LGBMRegressor-hi-95":float},
+            }
+            expected_cols = required_columns[field.field_name]
+
+            missing_cols = set(expected_cols.keys()) - set(df.columns)
+            extra_cols = set(df.columns) - set(expected_cols.keys())
+            
+            if missing_cols:
+                raise ValueError(f"The DataFrame '{field.field_name}' missing required columns.")
+
+            if extra_cols:
+                raise ValueError(f"The DataFrame '{field.field_name}' contains unexpected columns.")
+
+            for col, expected_type in expected_cols.items():
+                if not df[col].map(lambda x: isinstance(x, expected_type)).all():
+                    raise ValueError(f"The column '{col}' in the DataFrame '{field.field_name}' does not match the expected type.")
+                if expected_type == str and not df[col].isin(ALLOWED_IDS).all():
+                    raise ValueError(f"The column '{col}' in the DataFrame '{field.field_name}' contains invalid values.")
+            return df
+        
+        except ValueError as e:
+            st.error(str(e))
+            st.session_state.clear()
+            st.stop()
+
+def initialize_session_state(train: pd.DataFrame, INIT_FOUNDS: float, NB_IDS: int, INIT_MAX_STOCK: int, INIT_YEARS_PLOT: int):
+    try:
+        if 'state' not in st.session_state:
+            selected_ids_list = list(np.random.choice(train['unique_id'].unique(), NB_IDS, replace=False))
+            st.session_state.state = SessionStateModel(
+                funds=INIT_FOUNDS,
+                selected_ids=selected_ids_list,
+                stock={id: np.random.randint(0,INIT_MAX_STOCK) for id in selected_ids_list},
+                purchase_price = {id: None for id in selected_ids_list},
+                current_step=0,
+                years_plot=INIT_YEARS_PLOT,
+            )
+    except ValidationError:
+        st.error(f"Session state initialization failed")
+        st.session_state.clear()
+        st.stop()
+
+
+def reset_session_state(train: pd.DataFrame, INIT_FOUNDS: float, NB_IDS: int, INIT_MAX_STOCK: int, INIT_YEARS_PLOT: int):
+    try:
+        selected_ids_list = list(np.random.choice(train['unique_id'].unique(), NB_IDS, replace=False))
+        st.session_state.state = SessionStateModel(
+                funds=INIT_FOUNDS,
+                selected_ids=selected_ids_list,
+                stock={id: np.random.randint(0,INIT_MAX_STOCK) for id in selected_ids_list},
+                purchase_price = {id: None for id in selected_ids_list},
+                current_step=0,
+                years_plot=INIT_YEARS_PLOT,
+            )
+    except ValidationError:
+        st.error(f"Session state reset failed")
+        st.session_state.clear()
+        st.stop()
+
+def validate_session_state():
+    try:
+        st.session_state.state = SessionStateModel(**st.session_state.state.model_dump())   
+    except ValidationError:
+        st.error(f"Session state validation failed")
+        st.session_state.clear()
+        st.stop()
 
 
 ###### MODEL ######
@@ -133,14 +247,15 @@ class LocalMinMaxScaler(BaseTargetTransform):
         return df
 
 
-def prepare_prediction_data(train, test, current_step, HORIZON):
+def prepare_prediction_data(train: pd.DataFrame, test: pd.DataFrame, current_step: int, HORIZON: int):
     cutoff_date = train['Date'].max() + timedelta(weeks=HORIZON * (current_step - 1))
     test_cutoff_date = test[test['Date'] <= cutoff_date]
-    return pd.concat([train, test_cutoff_date])
+    df_valid = validate_data(pd.concat([train, test_cutoff_date]))
+    return df_valid
 
 
 @st.cache_data
-def make_predictions(data, HORIZON):
+def make_predictions(data: pd.DataFrame, HORIZON: int):
     sk_log1p = FunctionTransformer(func=np.log1p, inverse_func=np.expm1)
     lgbm_params = {
         'n_estimators': 133, 
@@ -179,7 +294,7 @@ def make_predictions(data, HORIZON):
     predictions = fcst.predict(HORIZON, level=[95])
     return predictions 
 
-def baseline_model(data, HORIZON):
+def baseline_model(data: pd.DataFrame, HORIZON: int):
     fcst = StatsForecast(
         models=[Naive(), SeasonalNaive(season_length=52)],
         freq='W'
@@ -194,7 +309,7 @@ def baseline_model(data, HORIZON):
     return predictions.reset_index()
     
 
-def evaluate_model(data, predictions, baseline, selected_id, METRICS_LIST):
+def evaluate_model(data: pd.DataFrame, predictions: pd.DataFrame, baseline: pd.DataFrame, selected_id: str, METRICS_LIST: List[Callable]):
     data_filtered = data[data['unique_id'].eq(selected_id)].copy()
     predictions_filtered = predictions[predictions['unique_id'].eq(selected_id)].copy()
     join_df = data_filtered.merge(predictions_filtered, on=['unique_id', 'Date'])\
@@ -215,12 +330,12 @@ def evaluate_model(data, predictions, baseline, selected_id, METRICS_LIST):
 ###### RESCALE ######
 
 
-def rescale_value(value, min_value, max_value, min_new_value, max_new_value):
+def rescale_value(value: float, min_value: float, max_value: float, min_new_value: float, max_new_value: float):
     numerator = (value - min_value) * (max_new_value - min_new_value)
     denominator = max_value - min_value
     return min_new_value + numerator / denominator
 
-def rescale_col(df, cols, selected_ids, minmax_df, INTERVAL_RESCALE):
+def rescale_col(df: pd.DataFrame, cols: List[str], selected_ids: List[str], minmax_df: pd.DataFrame, INTERVAL_RESCALE: List[float]):
     df = df[df['unique_id'].isin(selected_ids)].copy()
     minmax_df = minmax_df.reset_index().copy()
     df = df.merge(minmax_df, on=['unique_id'])
@@ -236,8 +351,9 @@ def rescale_col(df, cols, selected_ids, minmax_df, INTERVAL_RESCALE):
 
 
 def generate_plots(
-    data, predictions, past_predictions, selected_ids, current_step, shopping_days=None, 
-    sales_days=None, years_plot=4, PLOT_PRED=True
+    data: pd.DataFrame, predictions: pd.DataFrame, past_predictions: pd.DataFrame, selected_ids: List[str], 
+    current_step: int, shopping_days: List[Tuple[str, pd.Timestamp, float]] | None = None, 
+    sales_days: List[Tuple[str, pd.Timestamp, float]] | None = None, years_plot: int = 4, PLOT_PRED: bool = True
 ):
     fig = make_subplots(
         rows=len(selected_ids), cols=1,  shared_xaxes=True, vertical_spacing=0.05, 
@@ -372,8 +488,8 @@ def generate_plots(
 ###### TRADING INTERFACE ######
 
 
-def manage_trading_actions(data, minmax_df, INTERVAL_RESCALE, mode):
-    selected_id = st.selectbox('Sélectionnez un poisson : ', options=st.session_state.selected_ids)
+def manage_trading_actions(data: pd.DataFrame, minmax_df: pd.DataFrame, INTERVAL_RESCALE: List[float], mode: str):
+    selected_id = st.selectbox('Sélectionnez un poisson : ', options=state.selected_ids)
     current_price = np.round(rescale_value(
         data[data['unique_id'] == selected_id]['Prix'].iloc[-1], minmax_df.loc[selected_id,'Min'], 
         minmax_df.loc[selected_id,'Max'], INTERVAL_RESCALE[0], INTERVAL_RESCALE[1]
@@ -382,14 +498,14 @@ def manage_trading_actions(data, minmax_df, INTERVAL_RESCALE, mode):
     st.write(f"Prix : {current_price} €")
 
     if mode == 'buy':
-        max_quantity = int(st.session_state.funds // current_price)
+        max_quantity = int(state.funds // current_price)
     else:
-        max_quantity = st.session_state.stock[selected_id]
+        max_quantity = state.stock[selected_id]
     
     if max_quantity > 0:
-        if not np.isnan(st.session_state.purchase_price[selected_id]) and mode == 'sell':
+        if state.purchase_price[selected_id] != None and mode == 'sell':
             st.write(
-                f'Rendement depuis le dernier achat : {np.round((current_price - st.session_state.purchase_price[selected_id]) / st.session_state.purchase_price[selected_id] * 100, 3)} %'
+                f'Rendement depuis le dernier achat : {np.round((current_price - state.purchase_price[selected_id]) / state.purchase_price[selected_id] * 100, 3)} %'
             )
 
         quantity = st.slider('Choisir la quantité :', min_value=0, max_value=max_quantity)
@@ -399,17 +515,17 @@ def manage_trading_actions(data, minmax_df, INTERVAL_RESCALE, mode):
         if st.button('Confirmer'):
             current_day = data[data['unique_id'] == selected_id]['Date'].iloc[-1]
             if mode == 'buy':
-                st.session_state.funds -= total
-                st.session_state.stock[selected_id] += quantity
+                state.funds -= total
+                state.stock[selected_id] += quantity
                 st.success("Achat confirmé ! 🎉")
-                st.session_state.shopping_days.append((selected_id, current_day, current_price))
-                st.session_state.purchase_price[selected_id] = current_price
+                state.shopping_days.append((selected_id, current_day, current_price))
+                state.purchase_price[selected_id] = current_price
             else:
-                st.session_state.funds += total
-                st.session_state.stock[selected_id] -= quantity
+                state.funds += total
+                state.stock[selected_id] -= quantity
                 st.success("Vente confirmée ! 🎉")
-                st.session_state.sales_days.append((selected_id, current_day, current_price))
-
+                state.sales_days.append((selected_id, current_day, current_price))
+            
     elif mode == 'buy':
         st.write(f"Les fonds disponibles ne sont pas suffisants.")
     else:
@@ -419,7 +535,7 @@ def manage_trading_actions(data, minmax_df, INTERVAL_RESCALE, mode):
 ###### ANALYSIS TIME SERIES ######
 
 
-def statistic_serie(df, predictions, selected_id):
+def statistic_serie(df: pd.DataFrame, predictions: pd.DataFrame, selected_id: List[str]):
     col1, col2 = st.columns([3,0.5])
     with col1:
         df_filtre = df[df['unique_id'] == selected_id]
@@ -463,7 +579,7 @@ def statistic_serie(df, predictions, selected_id):
         st.table(df[df['unique_id'] == selected_id]['Prix'].describe())
 
 
-def seasonal_analysis(df, selected_id, period=52):
+def seasonal_analysis(df: pd.DataFrame, selected_id: List[str], period: int = 52):
     filtered_df = df[df['unique_id'] == selected_id].copy()
 
     decomposition = STL(filtered_df['Prix'], period=period).fit()
@@ -485,15 +601,17 @@ def seasonal_analysis(df, selected_id, period=52):
 train, test = load_data()
 minmax_df = pd.concat([train, test]).groupby(['unique_id'])['Prix'].agg(Min='min', Max='max')
 initialize_session_state(train, INIT_FOUNDS, NB_IDS, INIT_MAX_STOCK, INIT_YEARS_PLOT)
+validate_session_state()
+state = st.session_state.state
 
-st.title("📈 Crise des Anchois 📈")
 
-if st.session_state.current_step == 0:
+st.title("📈 Crise des Anchois 📈") 
+
+
+if state.current_step == 0:
     st.write(
         """
-        🌊 **Bienvenue dans l'univers impitoyable des marchés de la pêche !** 🐟
-
-        Prêt(e) à plonger dans l'univers impitoyable… des marchés de la pêche ?
+        🌊 Prêt(e) à plonger dans l'univers impitoyable… des marchés de la pêche ? 🐟
         
         Anticipez les hausses et les baisses pour maximiser vos profits tout en évitant les stocks invendus !
 
@@ -509,68 +627,71 @@ if st.session_state.current_step == 0:
         """
     )
     if st.button("Commencer 🐠"):
-        st.session_state.current_step += 1
+        state.current_step += 1
         st.rerun()
 
-elif st.session_state.current_step <= 10 :
-    button_text = "🚨 Lancer l'étape finale 🚨" if st.session_state.current_step == 10 else "➡️ Lancer l'étape suivante"
-    if st.button(button_text):
-        st.session_state.current_step += 1
-        st.session_state.first_predictions_bool = True
-        if st.session_state.current_step <= 10:
-            st.session_state.predictions_memories = pd.concat(
-                [st.session_state.predictions_memories, st.session_state.predictions], ignore_index=True
-            )   
+elif state.current_step <= 10 : 
+    button_text = "🚨 Voir les résultats 🚨" if state.current_step == 10 else "➡️ Lancer l'étape suivante" 
+    if st.button(button_text) and state.button_activate:
+        state.current_step += 1
+        state.first_predictions_bool = True
+        state.button_activate = False
+        if state.current_step <= 10:
+            state.predictions_memories = pd.concat(
+                [state.predictions_memories, state.predictions], ignore_index=True
+            )  
         st.rerun()
 
-    data = prepare_prediction_data(train, test, st.session_state.current_step, HORIZON)
+    data = prepare_prediction_data(train, test, state.current_step, HORIZON)
     
-    if st.session_state.first_predictions_bool and st.session_state.current_step < 10:    
-        st.session_state.predictions = make_predictions(data, HORIZON)
-        baseline_df = baseline_model(data[data['unique_id'].isin(st.session_state.selected_ids)], HORIZON)
-        st.session_state.baseline = pd.concat(
-                [st.session_state.baseline, baseline_df], ignore_index=True
+    if state.first_predictions_bool and state.current_step < 10:    
+        state.predictions = make_predictions(data, HORIZON)
+        baseline_df = baseline_model(data[data['unique_id'].isin(state.selected_ids)], HORIZON)
+        state.baseline = pd.concat(
+                [state.baseline, baseline_df], ignore_index=True
             ) 
     
-    st.session_state.years_plot = st.radio('Années à afficher : ', [1,2,3,4], index=st.session_state.years_plot-1,  horizontal=True)
+    state.years_plot = st.radio('Années à afficher : ', [1,2,3,4], index=state.years_plot-1,  horizontal=True)
 
+    
     col1, col2= st.columns([3,1])
     with col1:
-        data_rescale = rescale_col(data, ['Prix'], st.session_state.selected_ids, minmax_df, INTERVAL_RESCALE)
+        data_rescale = rescale_col(data, ['Prix'], state.selected_ids, minmax_df, INTERVAL_RESCALE)
         predictions_rescale = rescale_col(
-            st.session_state.predictions, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
-            st.session_state.selected_ids, minmax_df, INTERVAL_RESCALE
+            state.predictions, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
+            state.selected_ids, minmax_df, INTERVAL_RESCALE
         )
-        if st.session_state.current_step > 1:
+        if state.current_step > 1:
             predictions_memories_rescale = rescale_col(
-                st.session_state.predictions_memories, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
-                st.session_state.selected_ids, minmax_df, INTERVAL_RESCALE
+                state.predictions_memories, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
+                state.selected_ids, minmax_df, INTERVAL_RESCALE
             )
         else:
-            predictions_memories_rescale = pd.DataFrame({})
+            predictions_memories_rescale = pd.DataFrame()
 
         fig = generate_plots(
             data_rescale, predictions_rescale, predictions_memories_rescale,
-            st.session_state.selected_ids, st.session_state.current_step, years_plot=st.session_state.years_plot,
-            PLOT_PRED=True if st.session_state.current_step < 10 else False
+            state.selected_ids, state.current_step, years_plot=state.years_plot,
+            PLOT_PRED=True if state.current_step < 10 else False
             )
         st.plotly_chart(fig)
     
-        st.session_state.first_predictions_bool = False
+        state.first_predictions_bool = False
+        state.button_activate=True
 
     with col2:
-        st.markdown("## 🛒 **Actions de Trading**")
+        st.write("## 🛒 **Actions de Trading**")
         action = st.radio('Actions', ['Acheter', 'Vendre'], index=0)
         if action == 'Acheter':
             manage_trading_actions(data, minmax_df, INTERVAL_RESCALE, mode='buy')
         elif action =='Vendre':
             manage_trading_actions(data, minmax_df, INTERVAL_RESCALE, mode='sell')
-
+    
 else :
     col1_bis, col2_bis, col3_bis= st.columns([0.5,3,0.5])
     with col2_bis:
         st.title('🏆 Fin du Jeu : Vos Résultats !')
-        profits = st.session_state.funds - INIT_FOUNDS
+        profits = state.funds - INIT_FOUNDS
 
         st.write(f"- ##### **Profit total :** {profits:.2f} €")
         
@@ -581,25 +702,25 @@ else :
             st.write("- ##### 🥈 **Titre : Marchand des Mers !**")
             st.write("Vous avez fait fructifier vos prises et vos ventes avec brio. Un capitaine d'expérience, mais la mer a encore des trésors à offrir ! ⚓🐠")
         else:
-            st.write("- ##### 🥉 **Titre : Pêcheur Audacieux !**")
+            st.write("- ##### 🥉 **Titre : Apprenti Pêcheur !**")
             st.write("🐟 Vos débuts promettent des aventures encore plus lucratives !")
 
         st.write('')
         st.write("### 🔍 **Visualisez vos décisions de trading**")
         data = prepare_prediction_data(train, test, 10, HORIZON)
-        data_rescale = rescale_col(data, ['Prix'], st.session_state.selected_ids, minmax_df, INTERVAL_RESCALE)
+        data_rescale = rescale_col(data, ['Prix'], state.selected_ids, minmax_df, INTERVAL_RESCALE)
         predictions_rescale = rescale_col(
-            st.session_state.predictions, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
-            st.session_state.selected_ids, minmax_df, INTERVAL_RESCALE
+            state.predictions, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
+            state.selected_ids, minmax_df, INTERVAL_RESCALE
         )
         predictions_memories_rescale = rescale_col(
-            st.session_state.predictions_memories, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
-            st.session_state.selected_ids, minmax_df, INTERVAL_RESCALE
+            state.predictions_memories, ['LGBMRegressor', 'LGBMRegressor-hi-95', 'LGBMRegressor-lo-95'], 
+            state.selected_ids, minmax_df, INTERVAL_RESCALE
         )
         fig = generate_plots(
-            data_rescale, predictions_rescale, predictions_memories_rescale, st.session_state.selected_ids, 
-            st.session_state.current_step, shopping_days=st.session_state.shopping_days, 
-            sales_days=st.session_state.sales_days, years_plot=3, PLOT_PRED=False
+            data_rescale, predictions_rescale, predictions_memories_rescale, state.selected_ids, 
+            state.current_step, shopping_days=state.shopping_days, 
+            sales_days=state.sales_days, years_plot=3, PLOT_PRED=False
         )
         st.plotly_chart(fig)
 
@@ -612,47 +733,46 @@ else :
 
     st.divider()
     if st.toggle('🔍 Analyse Serie Temporelle'):
-        st.markdown("### 🎣 **Sélectionnez un poisson pour commencer l'analyse**")
+        st.write("### 🎣 **Sélectionnez un poisson pour commencer l'analyse**")
         selected_id = st.selectbox(
             'Choisissez un poisson :', 
-            options=st.session_state.selected_ids,
+            options=state.selected_ids,
             help="Cliquez sur un poisson pour explorer ses prix réels, les prédictions, et des analyses saisonnières."
         )
 
         tab1, tab2, tab3 = st.tabs(["📈 Statistiques des prix", "🗓️ Analyse saisonnière", "⚙️ Évaluation des modèles"])
 
         with tab1:
-            st.markdown("### 📈 **Statistiques des prix réels et des prédictions**")
-            st.markdown("Comparez les prix historiques et les prédictions générées par le modèle.")
-            statistic_serie(data, st.session_state.predictions_memories, selected_id)
+            st.write("### 📈 **Statistiques des prix réels et des prédictions**")
+            st.write("Comparez les prix historiques et les prédictions générées par le modèle.")
+            statistic_serie(data, state.predictions_memories, selected_id)
 
         with tab2:
-            st.markdown("### 🗓️ **Analyse des tendances saisonnières**")
-            st.markdown("Découvrez comment les prix varient au fil des mois une fois les tendances générales supprimées.")
+            st.write("### 🗓️ **Analyse des tendances saisonnières**")
+            st.write("Découvrez comment les prix varient au fil des mois une fois les tendances générales supprimées.")
             seasonal_analysis(data, selected_id, period=52)
 
         with tab3:
-            st.markdown("### ⚙️ **Évaluation des performances des modèles**")
-            st.markdown("Comparez les modèles utilisés pour prédire les prix.")
+            st.write("### ⚙️ **Évaluation des performances des modèles**")
+            st.write("Comparez les modèles utilisés pour prédire les prix.")
             col1, col2, col3 = st.columns([1,1,1])
             with col2:
-                evaluate_model(data, st.session_state.predictions_memories, st.session_state.baseline, selected_id, METRICS_LIST)
+                evaluate_model(data, state.predictions_memories, state.baseline, selected_id, METRICS_LIST)
 
 with st.sidebar:
-    st.markdown("# ⚡ **Progression**")
-    step = min(st.session_state.current_step, 10)
+    st.write("# ⚡ **Progression**")
+    step = min(state.current_step, 10)
     st.progress(step / 10)
-    st.markdown(f"### Étape actuelle : {step} / 10")
+    st.write(f"### Étape actuelle : {step} / 10")
     st.divider()
 
-    st.markdown("# 💰 **Fonds disponibles**")
-    st.markdown(f"## **{st.session_state.funds:.2f} €**")
+    st.write("# 💰 **Fonds disponibles**")
+    st.write(f"## **{state.funds:.2f} €**")
     st.divider()
     
-    st.markdown("# 📦 **Inventaire**")
-    for id_, quantity in st.session_state.stock.items():
-        st.markdown(f"- **{id_}** : {quantity} unité{'s' if quantity > 1 else ''}")
+    st.write("# 📦 **Inventaire**")
+    for id_, quantity in state.stock.items():
+        st.write(f"- **{id_}** : {quantity} unité{'s' if quantity > 1 else ''}")
+
     st.divider()
-    st.write("Développé par **Loïc THIERY**")
-
-
+    st.write("Développé par **Loïc THIERY**") 
