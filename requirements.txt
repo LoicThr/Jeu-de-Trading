@@ -9,3 +9,4 @@ statsmodels
 lightgbm
 window-ops
 numba
+pydantic
